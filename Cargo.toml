@@ -1,0 +1,16 @@
+[package]
+name = "mudns"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+bit_field = "0.10"
+byteorder = "1"
+bytes = "1"
+linked_hash_set = "0.1"
+parking_lot = "0.11"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
