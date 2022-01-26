@@ -47,10 +47,11 @@ async fn main() {
 
     let cache = Arc::new(Cache::new(
         100,
-        Duration::ZERO,
+        0,
+        3600 * 24,
+        60,
         Duration::from_secs(3600 * 24),
-        Duration::from_secs(60),
-        Duration::from_secs(3600 * 24)));
+        5));
 
     let mut rule_lists = HashMap::new();
     rule_lists.insert(DEFAULT_RULE_LIST_ID.to_owned(), vec![

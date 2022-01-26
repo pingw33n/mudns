@@ -38,14 +38,14 @@ impl Forward {
         }
         debug!(?cached_items, "found in cache");
         if cached_items.len() == 1 {
-            match &cached_items[0].data {
+            match &cached_items[0] {
                 &ItemData::Negative(rc) => return Some(ctx.query.to_response_with_code(rc)),
                 ItemData::Positive(_) => {}
             }
         }
         let mut r = ctx.query.to_response();
         for item in cached_items {
-            match item.data {
+            match item {
                 ItemData::Negative(_) => {}
                 ItemData::Positive(rr) => {
                     if rr.kind == ctx.query.question.kind {

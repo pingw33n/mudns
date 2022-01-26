@@ -46,26 +46,29 @@ pub enum ItemData {
 
 pub struct Cache {
     cache: Mutex<LruCache<Key, Item>>,
-    min_positive_ttl: Duration,
-    max_positive_ttl: Duration,
-    negative_ttl: Duration,
-    stale_ttl: Duration,
+    min_positive_ttl_secs: u32,
+    max_positive_ttl_secs: u32,
+    negative_ttl_secs: u32,
+    max_staleness: Duration,
+    stale_ttl_secs: u32,
 }
 
 impl Cache {
     pub fn new(
         capacity: usize,
-        min_positive_ttl: Duration,
-        max_positive_ttl: Duration,
-        negative_ttl: Duration,
-        stale_ttl: Duration,
+        min_positive_ttl_secs: u32,
+        max_positive_ttl_secs: u32,
+        negative_ttl_secs: u32,
+        max_staleness: Duration,
+        stale_ttl_secs: u32,
     ) -> Self {
         Self {
             cache: Mutex::new(LruCache::new(capacity)),
-            min_positive_ttl,
-            max_positive_ttl,
-            negative_ttl,
-            stale_ttl,
+            min_positive_ttl_secs,
+            max_positive_ttl_secs,
+            negative_ttl_secs,
+            max_staleness,
+            stale_ttl_secs,
         }
     }
 
@@ -75,7 +78,7 @@ impl Cache {
         rr_class: RRClass,
         now: Instant,
         include_stale: bool,
-    ) -> Vec<Item> {
+    ) -> Vec<ItemData> {
         let start = Key {
             name: name.clone(),
             rr_kind,
@@ -90,14 +93,25 @@ impl Cache {
         let mut cache = self.cache.lock();
         cache.range((Bound::Included(&start), Bound::Included(&end)), true, |_, item| {
             let ttl = match &item.data {
-                ItemData::Negative(_) => self.negative_ttl,
-                ItemData::Positive(rr) => rr.ttl(),
+                ItemData::Negative(_) => self.negative_ttl_secs,
+                ItemData::Positive(rr) => rr.ttl_secs,
             };
-            let expires = item.ts + ttl;
-            if include_stale && expires + self.stale_ttl > now ||
+            let expires = item.ts + Duration::from_secs(ttl.into());
+            if include_stale && expires + self.max_staleness > now ||
                 !include_stale && expires > now
             {
-                r.push(item.clone());
+                let mut item_data = item.data.clone();
+                match &mut item_data {
+                    ItemData::Negative(_) => {}
+                    ItemData::Positive(v) => {
+                        let elapsed_ttl = (now - item.ts).as_secs()
+                            .try_into()
+                            .unwrap_or(u32::MAX);
+                        v.ttl_secs = v.ttl_secs.checked_sub(elapsed_ttl)
+                            .unwrap_or(self.stale_ttl_secs);
+                    }
+                }
+                r.push(item_data.clone());
             }
         });
         r
