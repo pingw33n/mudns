@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use linked_hash_set::LinkedHashSet;
 use tracing::{debug, debug_span};
 
-use crate::cache::{Cache, Item, ItemData};
+use crate::cache::{Cache, Item};
 use crate::dns::*;
 use crate::process::rule::*;
 

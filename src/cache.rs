@@ -26,26 +26,25 @@ struct Key {
 #[derive(Debug, Eq, Clone, Hash, Ord, PartialEq, PartialOrd)]
 enum SubKey {
     First,
-    Ipv4Addr(Ipv4Addr),
-    Ipv6Addr(Ipv6Addr),
-    Name(Name),
+    Negative,
+    RRData(crate::dns::RRData),
     Last,
 }
 
 #[derive(Clone, Debug)]
-pub struct Item {
+struct Value {
     pub ts: Instant,
-    pub data: ItemData,
+    pub rcode_or_ttl_secs: u32,
 }
 
 #[derive(Clone, Debug)]
-pub enum ItemData {
+pub enum Item {
     Negative(ResponseCode),
     Positive(ResourceRecord),
 }
 
 pub struct Cache {
-    cache: Mutex<LruCache<Key, Item>>,
+    cache: Mutex<LruCache<Key, Value>>,
     min_positive_ttl_secs: u32,
     max_positive_ttl_secs: u32,
     negative_ttl_secs: u32,
@@ -78,7 +77,7 @@ impl Cache {
         rr_class: RRClass,
         now: Instant,
         include_stale: bool,
-    ) -> Vec<ItemData> {
+    ) -> Vec<Item> {
         let start = Key {
             name: name.clone(),
             rr_kind,
@@ -91,27 +90,35 @@ impl Cache {
         let mut r = Vec::new();
 
         let mut cache = self.cache.lock();
-        cache.range((Bound::Included(&start), Bound::Included(&end)), true, |_, item| {
-            let ttl = match &item.data {
-                ItemData::Negative(_) => self.negative_ttl_secs,
-                ItemData::Positive(rr) => rr.ttl_secs,
+        cache.range((Bound::Included(&start), Bound::Included(&end)), true, |key, value| {
+            let ttl_secs = match &key.sub {
+                SubKey::Negative => self.negative_ttl_secs,
+                SubKey::RRData(_) => value.rcode_or_ttl_secs,
+                SubKey::First | SubKey::Last => unreachable!(),
             };
-            let expires = item.ts + Duration::from_secs(ttl.into());
+            let expires = value.ts + Duration::from_secs(ttl_secs.into());
             if include_stale && expires + self.max_staleness > now ||
                 !include_stale && expires > now
             {
-                let mut item_data = item.data.clone();
-                match &mut item_data {
-                    ItemData::Negative(_) => {}
-                    ItemData::Positive(v) => {
-                        let elapsed_ttl = (now - item.ts).as_secs()
+                let item = match &key.sub {
+                    SubKey::Negative => Item::Negative(value.rcode_or_ttl_secs.try_into().unwrap()),
+                    SubKey::RRData(rr) => {
+                        let elapsed_ttl_secs = (now - value.ts).as_secs()
                             .try_into()
                             .unwrap_or(u32::MAX);
-                        v.ttl_secs = v.ttl_secs.checked_sub(elapsed_ttl)
+                        let ttl_secs = value.rcode_or_ttl_secs.checked_sub(elapsed_ttl_secs)
                             .unwrap_or(self.stale_ttl_secs);
+                        Item::Positive(ResourceRecord {
+                            name: name.clone(),
+                            kind: rr_kind,
+                            class: rr_class,
+                            ttl_secs,
+                            data: rr.clone(),
+                        })
                     }
-                }
-                r.push(item_data.clone());
+                    SubKey::First | SubKey::Last => unreachable!(),
+                };
+                r.push(item);
             }
         });
         r
@@ -121,22 +128,12 @@ impl Cache {
         name: Name,
         rr_kind: RRKind,
         rr_class: RRClass,
+        now: Instant,
         item: Item,
     ) {
-        let sub = if rr_kind == RRK_A || rr_kind == RRK_AAAA || rr_kind == RRK_NS {
-            match &item.data {
-                ItemData::Negative(_) => SubKey::First,
-                ItemData::Positive(rr) => match &rr.data {
-                    &RRData::Ipv4Addr(v) => SubKey::Ipv4Addr(v),
-                    &RRData::Ipv6Addr(v) => SubKey::Ipv6Addr(v),
-                    RRData::Name(v) => SubKey::Name(v.clone()),
-                    | RRData::Soa(_)
-                    | RRData::Unknown
-                    => SubKey::First
-                }
-            }
-        } else {
-            SubKey::First
+        let (sub, rcode_or_ttl_secs) = match item {
+            Item::Negative(rcode) => (SubKey::Negative, rcode.into()),
+            Item::Positive(rr) => (SubKey::RRData(rr.data), rr.ttl_secs),
         };
         let key = Key {
             name,
@@ -146,7 +143,10 @@ impl Cache {
         };
 
         let mut cache = self.cache.lock();
-        cache.insert(key, item);
+        cache.insert(key, Value {
+            ts: now,
+            rcode_or_ttl_secs,
+        });
     }
 }
 
@@ -167,9 +167,10 @@ mod tests {
 
         let data = [
             SubKey::First,
-            SubKey::Ipv4Addr(Ipv4Addr::UNSPECIFIED),
-            SubKey::Ipv6Addr(Ipv6Addr::UNSPECIFIED),
-            SubKey::Name(Name::default()),
+            SubKey::Negative,
+            SubKey::RRData(RRData::Name("abc.def".parse().unwrap())),
+            SubKey::RRData(RRData::Ipv4Addr(Ipv4Addr::UNSPECIFIED)),
+            SubKey::RRData(RRData::Ipv6Addr(Ipv6Addr::UNSPECIFIED)),
         ];
         for v in data {
             assert!(v < SubKey::Last);

@@ -454,7 +454,7 @@ impl ResourceRecord {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RRData {
     Name(Name),
     Ipv4Addr(Ipv4Addr),
@@ -475,7 +475,7 @@ impl RRData {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Soa {
     primary_name: Name,
     responsible_name: Name,
