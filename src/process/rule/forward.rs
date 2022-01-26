@@ -113,7 +113,6 @@ impl Action for Forward {
 
         if let Some(pkt) = &mut packet {
             pkt.id = ctx.query.id;
-            pkt.remove_unknown_rrs();
             self.update_cache(pkt);
         }
 

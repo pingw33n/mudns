@@ -10,6 +10,7 @@ use bit_field::BitField;
 use byteorder::{BE, ReadBytesExt, WriteBytesExt};
 use byteorder::ByteOrder;
 use bytes::{Buf, BufMut, BytesMut};
+use tracing::trace;
 
 pub type ResponseCode = u8;
 pub const RCODE_NO_ERROR: ResponseCode = 0;
@@ -278,17 +279,23 @@ impl Packet {
 
         let mut answers = Vec::with_capacity(answer_count as usize);
         for _ in 0..answer_count {
-            answers.push(ResourceRecord::decode(pkt, cursor)?)
+            if let Some(rr) = ResourceRecord::decode(pkt, cursor)? {
+                answers.push(rr);
+            }
         }
 
         let mut authorities = Vec::with_capacity(authority_count as usize);
         for _ in 0..authority_count {
-            authorities.push(ResourceRecord::decode(pkt, cursor)?)
+            if let Some(rr) = ResourceRecord::decode(pkt, cursor)? {
+                authorities.push(rr);
+            }
         }
 
         let mut additional_rrs = Vec::with_capacity(additional_rr_count as usize);
         for _ in 0..additional_rr_count {
-            additional_rrs.push(ResourceRecord::decode(pkt, cursor)?)
+            if let Some(rr) = ResourceRecord::decode(pkt, cursor)? {
+                additional_rrs.push(rr);
+            }
         }
 
         Ok(Self {
@@ -353,15 +360,6 @@ impl Packet {
     pub fn to_response(&self) -> Self {
         self.to_response_with_code(RCODE_NO_ERROR)
     }
-
-    pub fn remove_unknown_rrs(&mut self) {
-        fn f(rrs: &mut Vec<ResourceRecord>) {
-            rrs.retain(|rr| !matches!(rr.data, RRData::Unknown));
-        }
-        f(&mut self.answers);
-        f(&mut self.authorities);
-        f(&mut self.additional_rrs);
-    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -400,7 +398,7 @@ pub struct ResourceRecord {
 }
 
 impl ResourceRecord {
-    fn decode<'a>(pkt: &'a [u8], cursor: &mut &'a [u8]) -> Result<Self> {
+    fn decode<'a>(pkt: &'a [u8], cursor: &mut &'a [u8]) -> Result<Option<Self>> {
         let name = Name::decode(pkt, cursor)?;
         let kind = cursor.read_u16::<BE>().map_err(|_| anyhow!("bad RR"))?;
         let class = cursor.read_u16::<BE>().map_err(|_| anyhow!("bad RR"))?;
@@ -424,16 +422,17 @@ impl ResourceRecord {
             (RRK_SOA, RRC_IN) => RRData::Soa(Soa::decode(pkt, cursor)?),
             _ => {
                 cursor.advance(data_len);
-                RRData::Unknown
+                trace!(%name, kind, class, ttl_secs, data_len, "skipping unknown RR data");
+                return Ok(None);
             }
         };
-        Ok(Self {
+        Ok(Some(Self {
             name,
             kind,
             class,
             ttl_secs,
             data,
-        })
+        }))
     }
 
     fn encode(&self, buf: &mut Vec<u8>) {
@@ -460,7 +459,6 @@ pub enum RRData {
     Ipv4Addr(Ipv4Addr),
     Ipv6Addr(Ipv6Addr),
     Soa(Soa),
-    Unknown,
 }
 
 impl RRData {
@@ -470,7 +468,6 @@ impl RRData {
             &Self::Ipv4Addr(v) => buf.put(&v.octets()[..]),
             Self::Ipv6Addr(v) => buf.put(&v.octets()[..]),
             Self::Soa(_) => todo!(),
-            Self::Unknown => panic!("can't encode unknown RR"),
         }
     }
 }
