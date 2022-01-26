@@ -10,7 +10,7 @@ use tracing::debug;
 
 use crate::Cache;
 use crate::cache::Item;
-use crate::dns::{Question, RCODE_NO_ERROR, RCODE_SERVER_FAILURE, ResponseCode};
+use crate::dns::{Question, RCODE_NO_ERROR, RCODE_SERVER_FAILURE, ResourceRecord, ResponseCode};
 use crate::upstream::UpstreamPool;
 
 use super::*;
@@ -37,21 +37,19 @@ impl Forward {
             return None;
         }
         debug!(?cached_items, "found in cache");
-        if cached_items.len() == 1 {
-            match &cached_items[0] {
-                &Item::Negative(rc) => return Some(ctx.query.to_response_with_code(rc)),
-                Item::Positive(_) => {}
-            }
-        }
         let mut r = ctx.query.to_response();
-        for item in cached_items {
-            match item {
-                Item::Negative(_) => {}
-                Item::Positive(rr) => {
-                    if rr.kind == ctx.query.question.kind {
-                        r.answers.push(rr);
-                    } else {
-                        r.additional_rrs.push(rr);
+        match &cached_items[0] {
+            &Item::Negative(rc) => r.response_code = rc,
+            Item::Positive(_) => {}
+        }
+        if r.response_code == RCODE_NO_ERROR {
+            for item in cached_items {
+                match item {
+                    Item::Negative(_) => unreachable!(),
+                    Item::Positive(rr) => {
+                        if rr.kind == ctx.query.question.kind {
+                            r.answers.push(rr);
+                        }
                     }
                 }
             }
@@ -66,15 +64,18 @@ impl Forward {
             return;
         };
         debug!("caching the response");
-        if pkt.response_code == RCODE_NO_ERROR {
-            for rr in &pkt.answers {
-                cache.insert(rr.name.clone(), rr.kind, rr.class,
-                             Instant::now(),
-                             Item::Positive(rr.clone()));
-            }
-        } else {
+        let now = Instant::now();
+        for rr in pkt.resource_records() {
+            cache.insert(
+                rr.name.clone(),
+                rr.kind,
+                rr.class,
+                now,
+                Item::Positive(rr.clone()));
+        }
+        if pkt.response_code != RCODE_NO_ERROR {
             cache.insert(pkt.question.name.clone(), pkt.question.kind, pkt.question.class,
-                         Instant::now(),
+                         now,
                          Item::Negative(pkt.response_code));
         }
     }

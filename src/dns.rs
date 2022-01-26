@@ -360,6 +360,12 @@ impl Packet {
     pub fn to_response(&self) -> Self {
         self.to_response_with_code(RCODE_NO_ERROR)
     }
+
+    pub fn resource_records(&self) -> impl Iterator<Item=&ResourceRecord> {
+        self.answers.iter()
+            .chain(self.authorities.iter())
+            .chain(self.additional_rrs.iter())
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -467,7 +473,7 @@ impl RRData {
             Self::Name(v) => v.encode(buf),
             &Self::Ipv4Addr(v) => buf.put(&v.octets()[..]),
             Self::Ipv6Addr(v) => buf.put(&v.octets()[..]),
-            Self::Soa(_) => todo!(),
+            Self::Soa(v) => v.encode(buf),
         }
     }
 }
@@ -501,5 +507,15 @@ impl Soa {
             expire_secs,
             min_ttl_secs,
         })
+    }
+
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.primary_name.encode(buf);
+        self.responsible_name.encode(buf);
+        buf.put_u32(self.serial);
+        buf.put_u32(self.refresh_secs);
+        buf.put_u32(self.retry_secs);
+        buf.put_u32(self.expire_secs);
+        buf.put_u32(self.min_ttl_secs);
     }
 }
