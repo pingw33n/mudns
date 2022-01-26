@@ -47,8 +47,8 @@ async fn main() {
 
     let cache = Arc::new(Cache::new(
         100,
-        0,
         3600 * 24,
+        0,
         60,
         Duration::from_secs(3600 * 24),
         5));

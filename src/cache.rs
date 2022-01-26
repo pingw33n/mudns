@@ -34,20 +34,26 @@ enum SubKey {
 #[derive(Clone, Debug)]
 struct Value {
     pub ts: Instant,
-    pub rcode_or_ttl_secs: u32,
+    pub ttl_secs: u32,
+    pub response_code: ResponseCode,
+    pub authorities: Vec<ResourceRecord>,
 }
 
 #[derive(Clone, Debug)]
 pub enum Item {
-    Negative(ResponseCode),
+    Negative {
+        response_code: ResponseCode,
+        // TODO optimize: store name(s) of SOA RRs
+        authorities: Vec<ResourceRecord>,
+    },
     Positive(ResourceRecord),
 }
 
 pub struct Cache {
     cache: Mutex<LruCache<Key, Value>>,
+    max_ttl_secs: u32,
     min_positive_ttl_secs: u32,
-    max_positive_ttl_secs: u32,
-    negative_ttl_secs: u32,
+    min_negative_ttl_secs: u32,
     max_staleness: Duration,
     stale_ttl_secs: u32,
 }
@@ -55,17 +61,19 @@ pub struct Cache {
 impl Cache {
     pub fn new(
         capacity: usize,
+        max_ttl_secs: u32,
         min_positive_ttl_secs: u32,
-        max_positive_ttl_secs: u32,
-        negative_ttl_secs: u32,
+        min_negative_ttl_secs: u32,
         max_staleness: Duration,
         stale_ttl_secs: u32,
     ) -> Self {
+        assert!(max_ttl_secs >= min_positive_ttl_secs);
+        assert!(max_ttl_secs >= min_negative_ttl_secs);
         Self {
             cache: Mutex::new(LruCache::new(capacity)),
+            max_ttl_secs,
             min_positive_ttl_secs,
-            max_positive_ttl_secs,
-            negative_ttl_secs,
+            min_negative_ttl_secs,
             max_staleness,
             stale_ttl_secs,
         }
@@ -91,22 +99,25 @@ impl Cache {
 
         let mut cache = self.cache.lock();
         cache.range((Bound::Included(&start), Bound::Included(&end)), true, |key, value| {
-            let ttl_secs = match &key.sub {
-                SubKey::Negative => self.negative_ttl_secs,
-                SubKey::RRData(_) => value.rcode_or_ttl_secs,
-                SubKey::First | SubKey::Last => unreachable!(),
-            };
-            let expires = value.ts + Duration::from_secs(ttl_secs.into());
+            let expires = value.ts + Duration::from_secs(value.ttl_secs.into());
             if include_stale && expires + self.max_staleness > now ||
                 !include_stale && expires > now
             {
                 let item = match &key.sub {
-                    SubKey::Negative => Item::Negative(value.rcode_or_ttl_secs.try_into().unwrap()),
+                    SubKey::Negative => {
+                        assert!(r.is_empty());
+                        Item::Negative {
+                            response_code: value.response_code,
+                            authorities: value.authorities.clone(),
+                        }
+                    }
                     SubKey::RRData(rr) => {
+                        assert_eq!(value.response_code, RCODE_NO_ERROR);
+                        assert!(value.authorities.is_empty());
                         let elapsed_ttl_secs = (now - value.ts).as_secs()
                             .try_into()
                             .unwrap_or(u32::MAX);
-                        let ttl_secs = value.rcode_or_ttl_secs.checked_sub(elapsed_ttl_secs)
+                        let ttl_secs = value.ttl_secs.checked_sub(elapsed_ttl_secs)
                             .unwrap_or(self.stale_ttl_secs);
                         Item::Positive(ResourceRecord {
                             name: name.clone(),
@@ -131,10 +142,30 @@ impl Cache {
         now: Instant,
         item: Item,
     ) {
-        let (sub, rcode_or_ttl_secs) = match item {
-            Item::Negative(rcode) => (SubKey::Negative, rcode.into()),
-            Item::Positive(rr) => (SubKey::RRData(rr.data), rr.ttl_secs),
+        let sub;
+        let ttl_secs;
+        let response_code;
+        let authorities;
+
+        match item {
+            Item::Negative { response_code: rcode, authorities: auths } => {
+                sub = SubKey::Negative;
+                ttl_secs = auths.get(0)
+                    .map(|v| v.ttl_secs.clamp(self.min_negative_ttl_secs, self.max_ttl_secs))
+                    .unwrap_or(self.min_negative_ttl_secs);
+                response_code = rcode;
+                authorities = auths;
+            },
+            Item::Positive(rr) => {
+                sub = SubKey::RRData(rr.data);
+                ttl_secs = rr.ttl_secs.clamp(self.min_positive_ttl_secs, self.max_ttl_secs);
+                response_code = RCODE_NO_ERROR;
+                authorities = Vec::new();
+            }
         };
+        if ttl_secs == 0 {
+            return;
+        }
         let key = Key {
             name,
             rr_kind,
@@ -145,7 +176,9 @@ impl Cache {
         let mut cache = self.cache.lock();
         cache.insert(key, Value {
             ts: now,
-            rcode_or_ttl_secs,
+            ttl_secs,
+            response_code,
+            authorities,
         });
     }
 }

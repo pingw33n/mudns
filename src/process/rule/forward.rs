@@ -10,7 +10,7 @@ use tracing::debug;
 
 use crate::Cache;
 use crate::cache::Item;
-use crate::dns::{Question, RCODE_NO_ERROR, RCODE_SERVER_FAILURE, ResourceRecord, ResponseCode};
+use crate::dns::*;
 use crate::upstream::UpstreamPool;
 
 use super::*;
@@ -23,33 +23,36 @@ struct Forward {
 
 impl Forward {
     fn lookup_cache(&self, ctx: &Context) -> Option<Packet> {
-        let cached_items = if let Some(cache) = self.cache.as_ref() {
-            cache.get(
-                &ctx.query.question.name,
-                ctx.query.question.kind,
-                ctx.query.question.class,
-                Instant::now(),
-                false)
+        let cache = if let Some(v) = self.cache.as_ref() {
+            v
         } else {
             return None;
         };
+        let cached_items = cache.get(
+            &ctx.query.question.name,
+            ctx.query.question.kind,
+            ctx.query.question.class,
+            Instant::now(),
+            false);
         if cached_items.is_empty() {
             return None;
         }
         debug!(?cached_items, "found in cache");
         let mut r = ctx.query.to_response();
         match &cached_items[0] {
-            &Item::Negative(rc) => r.response_code = rc,
+            Item::Negative { response_code, authorities } => {
+                r.response_code = *response_code;
+                r.authorities.extend_from_slice(authorities);
+                return Some(r);
+            }
             Item::Positive(_) => {}
         }
-        if r.response_code == RCODE_NO_ERROR {
-            for item in cached_items {
-                match item {
-                    Item::Negative(_) => unreachable!(),
-                    Item::Positive(rr) => {
-                        if rr.kind == ctx.query.question.kind {
-                            r.answers.push(rr);
-                        }
+        for item in cached_items {
+            match item {
+                Item::Negative { .. } => unreachable!(),
+                Item::Positive(rr) => {
+                    if rr.kind == ctx.query.question.kind {
+                        r.answers.push(rr);
                     }
                 }
             }
@@ -74,9 +77,15 @@ impl Forward {
                 Item::Positive(rr.clone()));
         }
         if pkt.response_code != RCODE_NO_ERROR {
-            cache.insert(pkt.question.name.clone(), pkt.question.kind, pkt.question.class,
-                         now,
-                         Item::Negative(pkt.response_code));
+            cache.insert(
+                pkt.question.name.clone(),
+                pkt.question.kind,
+                pkt.question.class,
+                now,
+                Item::Negative {
+                    response_code: pkt.response_code,
+                    authorities: pkt.authorities.clone(),
+                });
         }
     }
 }
