@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use anyhow::*;
 use bit_field::BitField;
-use byteorder::{BE, ReadBytesExt, WriteBytesExt};
+use byteorder::{BE, ReadBytesExt};
 use byteorder::ByteOrder;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut};
 use tracing::trace;
 
 pub type ResponseCode = u8;

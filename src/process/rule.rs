@@ -41,7 +41,7 @@ pub fn any() -> impl Matcher {
 
     #[async_trait]
     impl Matcher for Any {
-        async fn matches(&self, ctx: &Context) -> Result<bool> {
+        async fn matches(&self, _ctx: &Context) -> Result<bool> {
             Ok(true)
         }
     }

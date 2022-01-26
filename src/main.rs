@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![deny(non_snake_case)]
+#![deny(unsafe_code)]
 #![deny(unused_must_use)]
 
 use std::collections::HashMap;

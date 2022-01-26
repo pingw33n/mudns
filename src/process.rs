@@ -1,14 +1,11 @@
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::{bail, Result};
-use async_trait::async_trait;
 use linked_hash_set::LinkedHashSet;
-use tracing::{debug, debug_span};
+use tracing::debug;
 
-use crate::cache::{Cache, Item};
 use crate::dns::*;
 use crate::process::rule::*;
 
@@ -46,7 +43,7 @@ impl Processor {
         query.authorities.clear();
         query.additional_rrs.clear();
 
-        let mut rule_list_id = Cow::from(DEFAULT_RULE_LIST_ID);
+        let rule_list_id = Cow::from(DEFAULT_RULE_LIST_ID);
         let mut rule_list = &self.0.rule_lists[DEFAULT_RULE_LIST_ID];
 
         let mut seen = LinkedHashSet::new();

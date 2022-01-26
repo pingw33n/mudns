@@ -1,14 +1,13 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use tokio::net::UdpSocket;
-use tokio::sync::{broadcast, Mutex, oneshot, RwLock};
+use tokio::sync::Mutex;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tracing::{debug, debug_span, error, info};
+use tracing::{debug, error, info};
 
-use crate::dns::{Packet, PacketKind, RCODE_SERVER_FAILURE};
+use crate::dns::Packet;
 use crate::process::Processor;
 
 const MAX_UDP_PACKET_LEN: usize = 4096;
@@ -22,12 +21,12 @@ impl Server {
         info!("listening {:?}", addrs);
 
         let (stop_tx, mut stop_rx) = mpsc::channel(1);
-        let mut int = Arc::new(Serveri {
+        let int = Arc::new(Serveri {
             receiver: Mutex:: new(Receiver {
                 stop: stop_tx,
             })
         });
-        tokio::spawn(clone!(int => async move {
+        tokio::spawn(async move {
             let mut buf = [0; MAX_UDP_PACKET_LEN];
             loop {
                 tokio::select! {
@@ -51,7 +50,7 @@ impl Server {
                     }
                 };
             }
-        }));
+        });
         Ok(Self(int))
     }
 }
@@ -67,7 +66,7 @@ struct Receiver {
 #[tracing::instrument(skip_all, fields(?src))]
 async fn received(
     src: SocketAddr,
-    mut buf: [u8; MAX_UDP_PACKET_LEN],
+    buf: [u8; MAX_UDP_PACKET_LEN],
     len: usize,
     sock: Arc<UdpSocket>,
     processor: Processor,
