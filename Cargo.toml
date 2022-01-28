@@ -9,6 +9,7 @@ async-trait = "0.1"
 bit_field = "0.10"
 byteorder = "1"
 bytes = "1"
+futures = "0.3"
 linked_hash_set = "0.1"
 parking_lot = "0.11"
 tokio = { version = "1", features = ["full"] }

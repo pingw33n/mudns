@@ -44,8 +44,12 @@ async fn main() {
     }
 
     let upool = Arc::new(UpstreamPool::new(vec![
-        UpstreamServer::new("8.8.8.8:53".parse().unwrap(), 100),
-        UpstreamServer::new("1.1.1.1:53".parse().unwrap(), 100),
+        UpstreamServer::new("8.8.8.8:53".parse().unwrap(), Duration::from_secs(3), 100),
+        UpstreamServer::new("8.8.4.4:53".parse().unwrap(), Duration::from_secs(3), 100),
+        UpstreamServer::new("1.1.1.1:53".parse().unwrap(), Duration::from_secs(3), 100),
+        // UpstreamServer::new("127.0.0.1:1234".parse().unwrap(), Duration::from_secs(3), 100),
+        // UpstreamServer::new("127.0.0.1:1235".parse().unwrap(), Duration::from_secs(3), 100),
+        // UpstreamServer::new("127.0.0.1:1236".parse().unwrap(), Duration::from_secs(3), 100),
     ]));
 
     let cache = Arc::new(Cache::new(
