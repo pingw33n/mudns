@@ -38,6 +38,19 @@ impl<K, V> LruCache<K, V>
         }
     }
 
+    pub fn remove_range<T: ?Sized, R>(&mut self, range: R)
+    where
+        T: Ord,
+        K: Borrow<T>,
+        R: RangeBounds<T>,
+    {
+        let mut keys = Vec::new();
+        self.range(range, false, |k, _| keys.push(k.clone()));
+        for key in &keys {
+            self.map.remove(key.borrow());
+        }
+    }
+
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         while self.map.len() == self.max_len {
             let k = self.order.pop_back().unwrap();
