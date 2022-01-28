@@ -1,12 +1,12 @@
+use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Semaphore;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::Cache;
 use crate::cache::Item;
@@ -28,36 +28,112 @@ impl Forward {
         } else {
             return None;
         };
-        let cached_items = cache.get(
+        let now = Instant::now();
+
+        let mut r = ctx.query.to_response();
+
+        let items = cache.get(
             &ctx.query.question.name,
             ctx.query.question.kind,
             ctx.query.question.class,
-            Instant::now(),
+            now,
             false);
-        if cached_items.is_empty() {
+
+        for item in items {
+            match item {
+                Item::Negative { response_code, .. } => r.response_code = response_code,
+                Item::Positive(rr) => r.answers.push(rr),
+            }
+        }
+
+        self.lookup_related(&mut r, cache, now);
+
+        if r.response_code == RCODE_NO_ERROR && r.answers.is_empty() && r.authorities.is_empty() {
             return None;
         }
-        debug!(?cached_items, "found in cache");
-        let mut r = ctx.query.to_response();
-        match &cached_items[0] {
-            Item::Negative { response_code, authorities } => {
-                r.response_code = *response_code;
-                r.authorities.extend_from_slice(authorities);
-                return Some(r);
-            }
-            Item::Positive(_) => {}
+
+        debug!(?r, "found in cache");
+        Some(r)
+    }
+
+    fn lookup_related(&self,
+        r: &mut Packet,
+        cache: &Cache,
+        now: Instant,
+    ) {
+        if !matches!(r.question.kind, RRK_A | RRK_AAAA)  {
+            return;
         }
-        for item in cached_items {
-            match item {
-                Item::Negative { .. } => unreachable!(),
+        if !r.answers.is_empty() {
+            return;
+        }
+
+        let mut seen = HashSet::new();
+        let mut name = r.question.name.clone();
+        loop {
+            if !seen.insert(name.clone()) {
+                warn!(?seen, %name, "CNAME cycle detected");
+                r.response_code = RCODE_SERVER_FAILURE;
+                return;
+            }
+            let mut cnames = cache.get(
+                &name,
+                RRK_CNAME,
+                r.question.class,
+                now,
+                false);
+            if cnames.is_empty() {
+                break;
+            }
+            assert_eq!(cnames.len(), 1);
+            let cname = cnames.remove(0);
+            debug!(%name, ?cname, "found related CNAME RR");
+            match cname {
+                Item::Negative { response_code, .. } => {
+                    if r.response_code == RCODE_NO_ERROR {
+                        r.response_code = response_code;
+                    }
+                    break;
+                }
                 Item::Positive(rr) => {
-                    if rr.kind == ctx.query.question.kind {
+                    name = rr.data.as_name().unwrap().clone();
+                    r.answers.push(rr);
+                }
+            }
+        }
+        let mut has_specific_answer = false;
+        if r.response_code == RCODE_NO_ERROR && seen.len() > 1 {
+            let items = cache.get(
+                &name,
+                r.question.kind,
+                r.question.class,
+                now,
+                false);
+            for item in items {
+                match item {
+                    Item::Negative { response_code, .. } => r.response_code = response_code,
+                    Item::Positive(rr) => {
+                        has_specific_answer = true;
                         r.answers.push(rr);
                     }
                 }
             }
         }
-        Some(r)
+        if !has_specific_answer {
+            let name = name.parent();
+            let items = cache.get(
+                &name,
+                RRK_SOA,
+                r.question.class,
+                now,
+                false);
+            for item in items {
+                match item {
+                    Item::Negative { .. } => {},
+                    Item::Positive(rr) => r.authorities.push(rr),
+                }
+            }
+        }
     }
 
     fn update_cache(&self, pkt: &Packet) {
@@ -73,19 +149,31 @@ impl Forward {
                 rr.name.clone(),
                 rr.kind,
                 rr.class,
+                rr.ttl_secs,
                 now,
                 Item::Positive(rr.clone()));
         }
-        if pkt.response_code != RCODE_NO_ERROR {
-            cache.insert(
-                pkt.question.name.clone(),
-                pkt.question.kind,
-                pkt.question.class,
-                now,
-                Item::Negative {
-                    response_code: pkt.response_code,
-                    authorities: pkt.authorities.clone(),
-                });
+        match pkt.response_code {
+            | RCODE_SERVER_FAILURE
+            | RCODE_NX_DOMAIN
+            => {
+                let soa = pkt.authorities.get(0)
+                    .filter(|rr| rr.kind == RRK_SOA && rr.class == pkt.question.class)
+                    .cloned();
+                cache.insert(
+                    pkt.question.name.clone(),
+                    pkt.question.kind,
+                    pkt.question.class,
+                    soa.as_ref()
+                        .map(|rr| rr.ttl_secs.min(rr.data.as_soa().unwrap().min_ttl_secs))
+                        .unwrap_or(0),
+                    now,
+                    Item::Negative {
+                        response_code: pkt.response_code,
+                        soa: soa.map(|rr| rr.name),
+                    });
+            }
+            _ => {}
         }
     }
 }

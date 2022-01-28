@@ -1,8 +1,9 @@
-use std::collections::{Bound, HashSet};
+use std::collections::Bound;
 use std::hash::Hash;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
+use tracing::debug;
 
 use lru::LruCache;
 
@@ -32,15 +33,14 @@ struct Value {
     pub ttl_secs: u32,
     pub response_code: ResponseCode,
     pub rr_data: Option<RRData>,
-    pub authorities: Vec<ResourceRecord>,
+    pub soa: Option<Name>,
 }
 
 #[derive(Clone, Debug)]
 pub enum Item {
     Negative {
         response_code: ResponseCode,
-        // TODO optimize: store name(s) of SOA RRs
-        authorities: Vec<ResourceRecord>,
+        soa: Option<Name>,
     },
     Positive(ResourceRecord),
 }
@@ -49,7 +49,8 @@ pub struct Cache {
     cache: Mutex<LruCache<Key, Value>>,
     max_ttl_secs: u32,
     min_positive_ttl_secs: u32,
-    min_negative_ttl_secs: u32,
+    min_negative_transient_ttl_secs: u32,
+    min_negative_persistent_ttl_secs: u32,
     max_staleness: Duration,
     stale_ttl_secs: u32,
 }
@@ -59,17 +60,20 @@ impl Cache {
         capacity: usize,
         max_ttl_secs: u32,
         min_positive_ttl_secs: u32,
-        min_negative_ttl_secs: u32,
+        min_negative_transient_ttl_secs: u32,
+        min_negative_persistent_ttl_secs: u32,
         max_staleness: Duration,
         stale_ttl_secs: u32,
     ) -> Self {
         assert!(max_ttl_secs >= min_positive_ttl_secs);
-        assert!(max_ttl_secs >= min_negative_ttl_secs);
+        assert!(max_ttl_secs >= min_negative_transient_ttl_secs);
+        assert!(max_ttl_secs >= min_negative_persistent_ttl_secs);
         Self {
             cache: Mutex::new(LruCache::new(capacity)),
             max_ttl_secs,
             min_positive_ttl_secs,
-            min_negative_ttl_secs,
+            min_negative_transient_ttl_secs,
+            min_negative_persistent_ttl_secs,
             max_staleness,
             stale_ttl_secs,
         }
@@ -108,7 +112,7 @@ impl Cache {
                             assert!(value.rr_data.is_none());
                             Item::Negative {
                                 response_code: value.response_code,
-                                authorities: value.authorities.clone(),
+                                soa: value.soa.clone(),
                             }
                         }
                     }
@@ -123,7 +127,7 @@ impl Cache {
 
     fn positive(&self, now: Instant, key: &Key, value: &Value, rr_data: &RRData) -> Item {
         assert_eq!(value.response_code, RCODE_NO_ERROR);
-        assert!(value.authorities.is_empty());
+        assert!(value.soa.is_none());
         let elapsed_ttl_secs = (now - value.ts).as_secs()
             .try_into()
             .unwrap_or(u32::MAX);
@@ -142,30 +146,30 @@ impl Cache {
         name: Name,
         rr_kind: RRKind,
         rr_class: RRClass,
+        ttl_secs: u32,
         now: Instant,
         item: Item,
     ) {
         let sub;
-        let ttl_secs;
         let response_code;
-        let authorities;
+        let soa;
 
-        let rr_data =match item {
-            Item::Negative { response_code: rcode, authorities: auths } => {
-                assert_ne!(rcode, RCODE_NO_ERROR);
+        let (min_ttl_secs, rr_data) = match item {
+            Item::Negative { response_code: rcode, soa: soa_ } => {
                 sub = SubKey::Unique;
-                ttl_secs = auths.get(0)
-                    .map(|v| v.ttl_secs.clamp(self.min_negative_ttl_secs, self.max_ttl_secs))
-                    .unwrap_or(self.min_negative_ttl_secs);
+                let min_ttl_secs = match rcode {
+                    RCODE_SERVER_FAILURE => self.min_negative_transient_ttl_secs,
+                    RCODE_NX_DOMAIN => self.min_negative_persistent_ttl_secs,
+                    _ => panic!("invalid response_code"),
+                };
                 response_code = rcode;
-                authorities = auths;
-                None
+                soa = soa_;
+                (min_ttl_secs, None)
             },
             Item::Positive(rr) => {
-                ttl_secs = rr.ttl_secs.clamp(self.min_positive_ttl_secs, self.max_ttl_secs);
                 response_code = RCODE_NO_ERROR;
-                authorities = Vec::new();
-                match rr.kind {
+                soa = None;
+                (self.min_positive_ttl_secs, match rr.kind {
                     | RRK_CNAME
                     | RRK_PTR
                     | RRK_SOA
@@ -177,9 +181,10 @@ impl Cache {
                         sub = SubKey::RRData(rr.data);
                         None
                     }
-                }
+                })
             }
         };
+        let ttl_secs = ttl_secs.clamp(min_ttl_secs, self.max_ttl_secs);
         if ttl_secs == 0 {
             return;
         }
@@ -217,13 +222,15 @@ impl Cache {
             cache.remove_range((Bound::Excluded(&start), Bound::Excluded(&end)));
         }
 
-        cache.insert(key, Value {
+        let value = Value {
             ts: now,
             ttl_secs,
             response_code,
             rr_data,
-            authorities,
-        });
+            soa,
+        };
+        debug!(?key, ?value, "inserting into cache");
+        cache.insert(key, value);
     }
 }
 

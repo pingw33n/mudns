@@ -5,11 +5,12 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::time::Duration;
 
-use anyhow::*;
+use anyhow::{anyhow, bail, Result};
 use bit_field::BitField;
 use byteorder::{BE, ReadBytesExt};
 use byteorder::ByteOrder;
 use bytes::{Buf, BufMut};
+use enum_as_inner::EnumAsInner;
 use tracing::trace;
 
 pub type ResponseCode = u8;
@@ -67,6 +68,14 @@ pub const RRCQ_ANY: RRClass = 255;
 pub struct Name(String);
 
 impl Name {
+    pub fn parent(&self) -> Name {
+        if let Some(i) = self.0.as_bytes().iter().position(|&c| c == b'.') {
+            Self(self.0[i + 1..].to_owned())
+        } else {
+            Default::default()
+        }
+    }
+
     fn decode<'a>(pkt: &'a [u8], cursor: &mut &'a [u8]) -> Result<Self> {
         let mut saved_cursor = None;
         let mut r = String::new();
@@ -459,7 +468,7 @@ impl ResourceRecord {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, EnumAsInner, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RRData {
     Name(Name),
     Ipv4Addr(Ipv4Addr),
@@ -480,13 +489,13 @@ impl RRData {
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Soa {
-    primary_name: Name,
-    responsible_name: Name,
-    serial: u32,
-    refresh_secs: u32,
-    retry_secs: u32,
-    expire_secs: u32,
-    min_ttl_secs: u32,
+    pub primary_name: Name,
+    pub responsible_name: Name,
+    pub serial: u32,
+    pub refresh_secs: u32,
+    pub retry_secs: u32,
+    pub expire_secs: u32,
+    pub min_ttl_secs: u32,
 }
 
 impl Soa {

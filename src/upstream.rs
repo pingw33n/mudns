@@ -1,14 +1,12 @@
-use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
 use anyhow::{bail, Result};
-use futures::{future, FutureExt, stream_select, StreamExt, TryStreamExt};
-use futures::stream::FuturesUnordered;
+use futures::{StreamExt, TryStreamExt};
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 use crate::{OP_QUERY, Packet, PacketKind};
@@ -146,9 +144,11 @@ impl UpstreamServer {
         };
         let r = Packet::decode(&buf[..len])?;
         debug!(?r, "decoded response");
+
         if r.id != query.id {
             bail!("received response with a different id: expected {} got {}", query.id, r.id);
         }
+
         Ok(r)
     }
 }
